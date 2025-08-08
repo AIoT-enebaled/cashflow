@@ -1,0 +1,413 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// Enum definitions
+enum UserRole {
+  USER
+  BUSINESS_OWNER
+  AGENT
+  ADMIN
+}
+
+enum SubscriptionTier {
+  LITE_USER         // Legacy tier - to be migrated to BASIC_TIER
+  BASIC_TIER        // UGX 5,000 - 15 transactions, max UGX 300,000 per transaction
+  STANDARD_TIER     // UGX 15,000 - 25 transactions, max UGX 500,000 per transaction
+  PREMIUM_TIER      // UGX 60,000 - 100 transactions, max UGX 1,500,000 per transaction
+  BUSINESS_TIER     // UGX 200,000 - 500 transactions, max UGX 5,000,000 per transaction
+  ENTERPRISE_TIER   // Custom - Contact CFC for 5M+ transactions
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  INACTIVE
+  CANCELLED
+  SUSPENDED
+  EXPIRED
+}
+
+enum TransactionStatus {
+  PENDING
+  COMPLETED
+  FAILED
+  CANCELLED
+  EXPIRED
+}
+
+enum TransactionType {
+  WITHDRAWAL
+  SUBSCRIPTION_PAYMENT
+  OVER_LIMIT_FEE
+  AGENT_FEE
+}
+
+enum WithdrawalTokenStatus {
+  PENDING
+  REDEEMED
+  EXPIRED
+  CANCELLED
+}
+
+enum NotificationType {
+  TRANSACTION_SUCCESS
+  TRANSACTION_FAILED
+  SUBSCRIPTION_RENEWAL
+  LIMIT_WARNING
+  SYSTEM_ALERT
+  TOKEN_GENERATED
+  TOKEN_REDEEMED
+}
+
+enum AgentStatus {
+  ACTIVE
+  INACTIVE
+  SUSPENDED
+}
+
+// Core User model
+model User {
+  id                String              @id @default(cuid())
+  email             String?             @unique
+  phone             String              @unique
+  name              String
+  role              UserRole            @default(USER)
+  isVerified        Boolean             @default(false)
+  kycCompleted      Boolean             @default(false)
+  language          String              @default("en")
+  
+  // Authentication
+  password          String?
+  emailVerified     DateTime?
+  image             String?
+  accounts          Account[]
+  sessions          Session[]
+  
+  // Business details (for business users)
+  businessName      String?
+  businessType      String?
+  businessAddress   String?
+  
+  // CashFlow Connect specific
+  subscription      Subscription?
+  transactions      Transaction[]
+  withdrawalTokens  WithdrawalToken[]
+  businesses        BusinessUser[]      // For multi-user business accounts
+  notifications     Notification[]
+  reports           Report[]
+  
+  // Agent relationship
+  agentProfile      Agent?
+  
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+  
+  @@map("users")
+}
+
+// NextAuth models
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@map("accounts")
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+  @@map("verification_tokens")
+}
+
+// Subscription model with detailed tier information
+model Subscription {
+  id                    String             @id @default(cuid())
+  userId                String             @unique
+  user                  User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  // Tier information
+  tier                  SubscriptionTier
+  status                SubscriptionStatus @default(ACTIVE)
+  
+  // Limits and pricing
+  monthlyPrice          Int                // Price in UGX
+  transactionLimit      Int                // Number of transactions per month
+  maxTransactionAmount  Int                // Maximum amount per transaction in UGX
+  overageFee           Int                // Fee per transaction over limit
+  
+  // Usage tracking
+  transactionsUsed      Int                @default(0)
+  currentMonthStart     DateTime           @default(now())
+  
+  // Payment tracking
+  payments             SubscriptionPayment[]
+  
+  // Timestamps
+  startDate            DateTime           @default(now())
+  endDate              DateTime?
+  lastRenewalDate      DateTime?
+  nextRenewalDate      DateTime?
+  
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+  
+  @@map("subscriptions")
+}
+
+// Subscription payment tracking
+model SubscriptionPayment {
+  id              String   @id @default(cuid())
+  subscriptionId  String
+  subscription    Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  
+  amount          Int      // Amount in UGX
+  paymentMethod   String   // mobile_money, card, etc.
+  status          String   // pending, completed, failed
+  reference       String   // Unique reference for this payment
+  transactionId   String?  // MTN transaction ID
+  externalReference String? // External reference from payment provider
+  paymentProvider String?  // Payment provider (MTN, CARD, etc.)
+  failureReason   String?  // Reason for failure if payment failed
+  completedAt     DateTime? // When payment was completed
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  @@map("subscription_payments")
+}
+
+// Enhanced Transaction model
+model Transaction {
+  id                String            @id @default(cuid())
+  userId            String
+  user              User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  // Transaction details
+  type              TransactionType
+  amount            Int               // Amount in UGX
+  fee               Int               @default(0) // Transaction fee
+  totalAmount       Int               // amount + fee
+  
+  // Status and tracking
+  status            TransactionStatus @default(PENDING)
+  reference         String            @unique // Unique transaction reference
+  
+  // Mobile money details
+  mobileMoneyProvider String?         // MTN, Airtel, etc.
+  phoneNumber       String?
+  
+  // Subscription tracking
+  subscriptionId    String?
+  isOverageTransaction Boolean        @default(false)
+  
+  // Payment tracking
+  subscriptionPayment SubscriptionPayment? @relation(fields: [subscriptionId], references: [id])
+  
+  // Withdrawal token
+  withdrawalToken   WithdrawalToken?
+  
+  // Timestamps
+  processedAt       DateTime?
+  completedAt       DateTime?
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+  
+  @@map("transactions")
+}
+
+// Withdrawal Token model for cash collection
+model WithdrawalToken {
+  id                String                @id @default(cuid())
+  userId            String
+  user              User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  // Token details
+  token             String                @unique // Unique token for agent verification
+  qrCode            String?               // QR code data
+  amount            Int                   // Amount to be collected
+  
+  // Status tracking
+  status            WithdrawalTokenStatus @default(PENDING)
+  
+  // Agent information
+  agentId           String?
+  agent             Agent?               @relation(fields: [agentId], references: [id])
+  redeemedAt        DateTime?
+  redeemedLocation  String?
+  
+  // Transaction link
+  transactionId     String?              @unique
+  transaction       Transaction?         @relation(fields: [transactionId], references: [id])
+  
+  // Expiration
+  expiresAt         DateTime             // Token expires after 24 hours
+  createdAt         DateTime             @default(now())
+  updatedAt         DateTime             @updatedAt
+  
+  @@map("withdrawal_tokens")
+}
+
+// Agent model for cash distribution
+model Agent {
+  id                String       @id @default(cuid())
+  userId            String       @unique
+  user              User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  // Agent details
+  agentCode         String       @unique // Unique agent identifier
+  businessName      String
+  businessAddress   String
+  phoneNumber       String
+  email             String?
+  
+  // Status and verification
+  status            AgentStatus  @default(ACTIVE)
+  isVerified        Boolean      @default(false)
+  verificationDate  DateTime?
+  
+  // Financial tracking
+  totalTransactions Int          @default(0)
+  totalAmount       Int          @default(0) // Total amount handled
+  commissionEarned  Int          @default(0) // Commission earned
+  
+  // Location
+  latitude          Float?
+  longitude         Float?
+  serviceArea       String?      // Area of operation
+  
+  // Withdrawal tokens handled
+  withdrawalTokens  WithdrawalToken[]
+  
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+  
+  @@map("agents")
+}
+
+// Business model for multi-user business accounts
+model Business {
+  id                String   @id @default(cuid())
+  name              String
+  type              String
+  address           String
+  phoneNumber       String
+  email             String?
+  
+  // Business users
+  users             BusinessUser[]
+  
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  
+  @@map("businesses")
+}
+
+// Business user relationship
+model BusinessUser {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  businessId  String
+  business    Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  
+  role        String   // owner, manager, employee
+  
+  createdAt   DateTime @default(now())
+  
+  @@unique([userId, businessId])
+  @@map("business_users")
+}
+
+// Notification model
+model Notification {
+  id          String           @id @default(cuid())
+  userId      String
+  user        User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  type        NotificationType
+  title       String
+  message     String
+  data        String?          // JSON data for additional info
+  
+  isRead      Boolean          @default(false)
+  readAt      DateTime?
+  
+  createdAt   DateTime         @default(now())
+  
+  @@map("notifications")
+}
+
+// Report model for analytics
+model Report {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  type        String   // monthly, quarterly, yearly
+  period      String   // 2024-01, 2024-Q1, 2024
+  data        String   // JSON report data
+  
+  createdAt   DateTime @default(now())
+  
+  @@map("reports")
+}
+
+// System settings model
+model SystemSetting {
+  id          String   @id @default(cuid())
+  key         String   @unique
+  value       String
+  description String?
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  @@map("system_settings")
+}
+
+// Audit log for security
+model AuditLog {
+  id          String   @id @default(cuid())
+  userId      String?
+  action      String
+  details     String   // JSON details
+  ipAddress   String?
+  userAgent   String?
+  
+  createdAt   DateTime @default(now())
+  
+  @@map("audit_logs")
+}

@@ -1,0 +1,10 @@
+{
+  "/auth/signin/page": "app/auth/signin/page.js",
+  "/auth/signup/page": "app/auth/signup/page.js",
+  "/dashboard/subscription/page": "app/dashboard/subscription/page.js",
+  "/auth/success/page": "app/auth/success/page.js",
+  "/dashboard/page": "app/dashboard/page.js",
+  "/api/dashboard/subscription/route": "app/api/dashboard/subscription/route.js",
+  "/api/auth/[...nextauth]/route": "app/api/auth/[...nextauth]/route.js",
+  "/api/dashboard/transactions/route": "app/api/dashboard/transactions/route.js"
+}
